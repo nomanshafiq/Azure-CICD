@@ -5,7 +5,8 @@ on:
     branches: [ main ]
 
 env:
-  AZURE_LOCATION: "westus2"
+  # ✅ Change region from westus2 → eastus (more stable for Cosmos Table)
+  AZURE_LOCATION: "eastus"
   RESOURCE_GROUP: "crc-rg"
   FUNCTIONAPP_NAME: "crc-backend-func"
   COSMOS_ACCOUNT: "crc-cosmos"
@@ -39,46 +40,52 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # ✅ 5. Create Resource Group (if not exists)
+      # ✅ 5. Ensure Resource Group exists
       - name: Ensure Resource Group exists
         run: |
           az group create \
             --name ${{ env.RESOURCE_GROUP }} \
             --location ${{ env.AZURE_LOCATION }}
 
-      # ✅ 6. Create Cosmos DB for Table API
+      # ✅ 6. Create Cosmos DB for Table API (with existence + region fix)
       - name: Create Cosmos DB for Table
         run: |
-          if ! az cosmosdb show --name ${{ env.COSMOS_ACCOUNT }} --resource-group ${{ env.RESOURCE_GROUP }} &>/dev/null; then
+          if ! az cosmosdb show --name ${{ env.COSMOS_ACCOUNT }} --resource-group ${{ env.RESOURCE_GROUP }} >/dev/null 2>&1; then
+            echo "Creating Cosmos DB account in ${AZURE_LOCATION}..."
             az cosmosdb create \
               --name ${{ env.COSMOS_ACCOUNT }} \
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --kind GlobalDocumentDB \
               --capabilities EnableTable \
               --locations regionName=${{ env.AZURE_LOCATION }} failoverPriority=0
+          else
+            echo "Cosmos DB account already exists. Skipping creation."
           fi
 
+          # Create table (ignore error if already exists)
           az cosmosdb table create \
             --account-name ${{ env.COSMOS_ACCOUNT }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --name ${{ env.TABLE_NAME }} || echo "Table already exists"
+            --name ${{ env.TABLE_NAME }} || echo "Table already exists."
 
       # ✅ 7. Create Storage Account
       - name: Create Storage Account
         run: |
-          if ! az storage account show --name ${{ env.STORAGE_ACCOUNT }} --resource-group ${{ env.RESOURCE_GROUP }} &>/dev/null; then
+          if ! az storage account show --name ${{ env.STORAGE_ACCOUNT }} --resource-group ${{ env.RESOURCE_GROUP }} >/dev/null 2>&1; then
             az storage account create \
               --name ${{ env.STORAGE_ACCOUNT }} \
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --location ${{ env.AZURE_LOCATION }} \
               --sku Standard_LRS \
               --kind StorageV2
+          else
+            echo "Storage account already exists. Skipping creation."
           fi
 
       # ✅ 8. Create Function App
       - name: Create Function App
         run: |
-          if ! az functionapp show --name ${{ env.FUNCTIONAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} &>/dev/null; then
+          if ! az functionapp show --name ${{ env.FUNCTIONAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} >/dev/null 2>&1; then
             az functionapp create \
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --consumption-plan-location ${{ env.AZURE_LOCATION }} \
@@ -88,7 +95,7 @@ jobs:
               --name ${{ env.FUNCTIONAPP_NAME }} \
               --storage-account ${{ env.STORAGE_ACCOUNT }}
           else
-            echo "Function App already exists"
+            echo "Function App already exists."
           fi
 
       # ✅ 9. Set Cosmos DB Connection String in Function App
@@ -109,12 +116,14 @@ jobs:
       # ✅ 10. Wait for SCM site to be ready
       - name: Wait for SCM site to be ready
         run: |
-          echo "Waiting for Kudu site to be ready..."
+          echo "Waiting for Kudu (SCM) site to be ready..."
           sleep 60
-          echo "Checking Function App state..."
-          az functionapp show -g ${{ env.RESOURCE_GROUP }} -n ${{ env.FUNCTIONAPP_NAME }} --query state
+          az functionapp show \
+            -g ${{ env.RESOURCE_GROUP }} \
+            -n ${{ env.FUNCTIONAPP_NAME }} \
+            --query state
 
-      # ✅ 11. Prepare clean deployment package
+      # ✅ 11. Prepare deployment package
       - name: Prepare deployment package
         run: |
           mkdir package
@@ -135,15 +144,18 @@ jobs:
               --src functionapp.zip --build-remote true && break || sleep 30
           done
 
-      # ✅ 13. Restart Function App (sync happens automatically)
+      # ✅ 13. Restart Function App
       - name: Restart Function App
         run: |
           az functionapp restart \
             -g ${{ env.RESOURCE_GROUP }} \
             -n ${{ env.FUNCTIONAPP_NAME }}
 
-      # ✅ 14. Output URL
+      # ✅ 14. Output Function URL
       - name: Output Function URL
         run: |
-          echo "Your Function URL is:"
+          echo "----------------------------------------------------"
+          echo "🎯 Your Function App is deployed successfully!"
+          echo "Function URL:"
           echo "https://${{ env.FUNCTIONAPP_NAME }}.azurewebsites.net/api/visitorcounter"
+          echo "----------------------------------------------------"
